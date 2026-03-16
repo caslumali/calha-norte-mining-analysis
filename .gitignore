@@ -1,0 +1,38 @@
+# OS / editor
+desktop.ini
+Thumbs.db
+.DS_Store
+*.code-workspace
+*.qgz
+
+# Documents and office files
+*.docx
+*.xlsx
+*.csv
+*.pdf
+*.kmz
+
+# Binary / local assets
+*.zip
+*.rds
+*.exe
+
+# Temporary / caches
+__pycache__/
+*.pyc
+*.tmp
+*.bak
+
+# Notebook and ad hoc material
+*.ipynb
+*.html
+*.txt
+
+# Keep only the curated public maps and scripts
+!README.md
+!PUBLISH_PLAN.md
+!scripts/
+!scripts/gee_apps/
+!scripts/gee_apps/*.js
+!maps/
+!maps/*.png
