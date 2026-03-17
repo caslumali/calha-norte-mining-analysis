@@ -17,6 +17,7 @@ app.imageLayer = null;
 app.optionalLayerCheckboxes = {};
 app.optionalLayerRefs = {};
 app.sceneMetadataById = {};
+app.defaultVisibleLayerName = 'Calha Norte mining sites';
 
 // Public Calha Norte assets used as optional context layers.
 app.assets = {
@@ -264,6 +265,7 @@ app.createPanels = function() {
   Object.keys(app.assets).forEach(function(layerName) {
     var checkbox = ui.Checkbox({
       label: layerName,
+      value: layerName === app.defaultVisibleLayerName,
       onChange: function(checked) {
         app.updateOptionalLayer(layerName, checked);
       }
@@ -707,6 +709,7 @@ app.boot = function() {
 
   Map.setCenter(-55.5, 0.1, 7);
   ui.root.insert(0, mainPanel);
+  app.updateOptionalLayer(app.defaultVisibleLayerName, true);
   app.applyFilters();
 };
 

@@ -17,6 +17,7 @@ app.imageLayer = null;
 app.optionalLayerCheckboxes = {};
 app.optionalLayerRefs = {};
 app.sceneMetadataById = {};
+app.defaultVisibleLayerName = 'Calha Norte mining sites';
 
 // Public Calha Norte assets used as optional context layers.
 app.assets = {
@@ -116,8 +117,8 @@ app.createPanels = function() {
 
   app.filters = {
     mapView: ui.Checkbox({label: 'Filter by current map view', value: true}),
-    startDate: ui.Textbox('YYYY-MM-DD', '2024-01-01'),
-    endDate: ui.Textbox('YYYY-MM-DD', '2024-12-31'),
+    startDate: ui.Textbox('YYYY-MM-DD', '2025-11-01'),
+    endDate: ui.Textbox('YYYY-MM-DD', '2025-12-31'),
     maxCloudCover: ui.Textbox('0-100', '50'),
     applyButton: ui.Button('Apply filters', app.applyFilters),
     loadingLabel: ui.Label({
@@ -228,6 +229,7 @@ app.createPanels = function() {
   Object.keys(app.assets).forEach(function(layerName) {
     var checkbox = ui.Checkbox({
       label: layerName,
+      value: layerName === app.defaultVisibleLayerName,
       onChange: function(checked) {
         app.updateOptionalLayer(layerName, checked);
       }
@@ -592,6 +594,7 @@ app.boot = function() {
 
   Map.setCenter(-55.5, 0.1, 7);
   ui.root.insert(0, mainPanel);
+  app.updateOptionalLayer(app.defaultVisibleLayerName, true);
   app.applyFilters();
 };
 
