@@ -1,43 +1,51 @@
 /*
  * Calha Norte Mining Analysis - Landsat Explorer
  *
- * Purpose:
- * Interactive Earth Engine app for filtering Landsat scenes, switching
- * visualizations, overlaying mining-related layers, and exporting selected
- * imagery for cartographic interpretation.
+ * Public Earth Engine app for filtering Landsat scenes, inspecting them with
+ * multiple visualization presets, overlaying territorial context layers, and
+ * exporting the current scene using the same map extent and band configuration
+ * currently displayed in the canvas.
  *
- * Notes:
- * - This public script depends on private Earth Engine assets referenced below.
- * - It is intended as a working image-inspection tool, not a full analysis
- *   pipeline.
+ * Author:
+ * Lucas Lima
  */
 
 var app = {};
 
+// Global state shared across UI callbacks.
+app.imageLayer = null;
 app.optionalLayerCheckboxes = {};
 app.optionalLayerRefs = {};
-app.imageLayer = null;
-app.collectionId = null;
-app.bandConfig = null;
 app.sceneMetadataById = {};
 
+// Public Calha Norte assets used as optional context layers.
 app.assets = {
   'Calha Norte mining sites': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/garimpos_cn'),
   'Mining zones': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/zones_garimpo_cn'),
-  'Hydrography': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/hid_1000_cn')
+  'Indigenous territories': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/ti_cn'),
+  'Federal protected areas': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/uc_federal_cn'),
+  'State protected areas': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/uc_estadual_cn'),
+  'Hydrography': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/hid_1000_cn'),
+  'Calha Norte boundary': ee.FeatureCollection('projects/amazon-mining-analysis/assets/garimpo-cn/lim_cn')
 };
 
 app.assetStyles = {
-  'Calha Norte mining sites': {color: 'yellow', pointSize: 5, pointShape: 'circle', width: 1},
-  'Mining zones': {color: 'red', fillColor: 'ffffff', width: 2},
-  'Hydrography': {color: 'blue', width: 1}
+  'Calha Norte mining sites': {color: 'purple', pointSize: 5, pointShape: 'circle', width: 1, fillColor: '80008040'},
+  'Mining zones': {color: 'red', fillColor: 'FF000040', width: 2},
+  'Indigenous territories': {color: '800080', fillColor: '80008030', width: 2},
+  'Federal protected areas': {color: '0000FF', fillColor: '0000FF25', width: 2},
+  'State protected areas': {color: '4A90E2', fillColor: '4A90E225', width: 2},
+  'Hydrography': {color: '1E90FF', width: 1},
+  'Calha Norte boundary': {color: 'FF8C00', fillColor: '00000000', width: 3}
 };
 
+// Core constants used by the application.
 app.createConstants = function() {
-  // Shared constants used across filtering, visualization, and export.
   app.imageCountLimit = 30;
   app.scaleFactor = 2.75e-05;
   app.offset = -0.2;
+  app.defaultMinStretch = 0;
+  app.defaultMaxStretch = 0.98;
   app.sectionStyle = {margin: '20px 0 0 0'};
   app.helpTextStyle = {margin: '8px 0 -3px 8px', fontSize: '12px', color: 'gray'};
   app.ndviPalette = [
@@ -47,13 +55,16 @@ app.createConstants = function() {
   ];
 };
 
-app.getCollectionConfig = function(startDate) {
-  // Landsat collections and band names change across sensor generations.
-  // This helper keeps the rest of the app sensor-agnostic.
-  if (startDate.millis().lte(ee.Date('2011-11-30').millis())) {
-    return {
+// Select the Landsat collections that are valid for the requested date range.
+app.getCollectionConfigs = function(startDateJs, endDateJs) {
+  var configs = [];
+  var gapStart = new Date('2011-12-01T00:00:00');
+  var gapEnd = new Date('2013-03-31T00:00:00');
+
+  if (startDateJs <= new Date('2011-11-30T00:00:00')) {
+    configs.push({
       id: 'LANDSAT/LT05/C02/T1_L2',
-      label: 'Landsat 5',
+      sensor: 'Landsat 5',
       bands: {
         blue: 'SR_B1',
         green: 'SR_B2',
@@ -62,44 +73,63 @@ app.getCollectionConfig = function(startDate) {
         swir1: 'SR_B5',
         swir2: 'SR_B7'
       }
-    };
+    });
   }
 
-  if (startDate.millis().gte(ee.Date('2013-04-01').millis())) {
-    return {
-      id: 'LANDSAT/LC08/C02/T1_L2',
-      label: 'Landsat 8/9',
-      bands: {
-        blue: 'SR_B2',
-        green: 'SR_B3',
-        red: 'SR_B4',
-        nir: 'SR_B5',
-        swir1: 'SR_B6',
-        swir2: 'SR_B7'
-      }
-    };
+  if (endDateJs >= new Date('2013-04-01T00:00:00')) {
+    [
+      {id: 'LANDSAT/LC08/C02/T1_L2', sensor: 'Landsat 8'},
+      {id: 'LANDSAT/LC09/C02/T1_L2', sensor: 'Landsat 9'}
+    ].forEach(function(item) {
+      configs.push({
+        id: item.id,
+        sensor: item.sensor,
+        bands: {
+          blue: 'SR_B2',
+          green: 'SR_B3',
+          red: 'SR_B4',
+          nir: 'SR_B5',
+          swir1: 'SR_B6',
+          swir2: 'SR_B7'
+        }
+      });
+    });
   }
 
-  return null;
+  var onlyGapPeriod = startDateJs >= gapStart && endDateJs <= gapEnd;
+  if (configs.length === 0 || onlyGapPeriod) {
+    return null;
+  }
+
+  return configs;
 };
 
-app.getVisualizationOptions = function() {
-  var bands = app.bandConfig;
+// Apply collection-specific scaling before display or export.
+app.applyScaleAndOffset = function(image) {
+  return image.multiply(app.scaleFactor).add(app.offset);
+};
 
-  // Visualization presets are tuned for quick visual inspection of vegetation,
-  // exposed soils, water, and mining disturbance.
+// Add NDVI when the selected visualization requires it.
+app.addNdviBand = function(image, bandConfig) {
+  return image.addBands(
+    image.normalizedDifference([bandConfig.nir, bandConfig.red]).rename('nd')
+  );
+};
+
+// Visualization presets for quick cartographic inspection.
+app.getVisualizationOptions = function(bandConfig) {
   return {
     'Natural color': {
       description: 'True-color composite for general visual inspection.',
-      visParams: {gamma: 1.3, min: 0, max: 0.3, bands: [bands.red, bands.green, bands.blue]}
+      visParams: {gamma: 1.3, min: 0, max: 0.3, bands: [bandConfig.red, bandConfig.green, bandConfig.blue]}
     },
     'False color': {
-      description: 'Vegetation appears in red tones and disturbed areas become easier to spot.',
-      visParams: {gamma: 1.3, min: 0, max: 0.3, bands: [bands.nir, bands.red, bands.green]}
+      description: 'Vegetation appears in red tones and disturbed surfaces become easier to spot.',
+      visParams: {gamma: 1.3, min: 0, max: 0.3, bands: [bandConfig.nir, bandConfig.red, bandConfig.green]}
     },
     'SWIR': {
-      description: 'Useful for contrasting moisture, exposed soils, and vegetation.',
-      visParams: {gamma: 1.3, min: 0, max: 0.3, bands: [bands.swir1, bands.nir, bands.red]}
+      description: 'Useful for contrasting moisture, exposed soils, and altered surfaces.',
+      visParams: {gamma: 1.3, min: 0, max: 0.3, bands: [bandConfig.swir1, bandConfig.nir, bandConfig.red]}
     },
     'NDVI': {
       description: 'Normalized Difference Vegetation Index.',
@@ -108,16 +138,7 @@ app.getVisualizationOptions = function() {
   };
 };
 
-app.applyScaleAndOffset = function(image) {
-  // Landsat Collection 2 surface reflectance needs scaling before display.
-  return image.multiply(app.scaleFactor).add(app.offset);
-};
-
-app.addNdviBand = function(image) {
-  var ndvi = image.normalizedDifference([app.bandConfig.nir, app.bandConfig.red]).rename('nd');
-  return image.addBands(ndvi);
-};
-
+// Build the UI panels shown in the app sidebar.
 app.createPanels = function() {
   app.intro = {
     panel: ui.Panel([
@@ -126,39 +147,35 @@ app.createPanels = function() {
         style: {fontWeight: 'bold', fontSize: '24px', margin: '10px 5px'}
       }),
       ui.Label(
-        'Filter Landsat scenes by date, inspect them with multiple visualizations, ' +
-        'overlay mining-related layers, and export selected imagery.'
+        'Interactive app for exploring historical Landsat scenes over Calha Norte and exporting the current view for cartographic work.'
       )
     ])
   };
 
   app.filters = {
-    mapCenter: ui.Checkbox({label: 'Filter around the current map center', value: true}),
-    startDate: ui.Textbox('YYYY-MM-DD', '1985-08-01'),
+    mapView: ui.Checkbox({label: 'Filter by current map view', value: true}),
+    startDate: ui.Textbox('YYYY-MM-DD', '1985-01-01'),
     endDate: ui.Textbox('YYYY-MM-DD', '1985-12-31'),
     maxCloudCover: ui.Textbox('0-100', '50'),
     applyButton: ui.Button('Apply filters', app.applyFilters),
-    statusLabel: ui.Label({
-      value: '',
-      style: {margin: '8px 0 0 0', fontSize: '12px', color: 'gray', shown: false}
-    }),
     loadingLabel: ui.Label({
       value: 'Loading...',
       style: {stretch: 'vertical', color: 'gray', shown: false}
+    }),
+    statusLabel: ui.Label({
+      value: '',
+      style: {margin: '8px 0 0 0', fontSize: '12px', color: 'gray', shown: false}
     })
   };
 
   app.filters.panel = ui.Panel({
     widgets: [
-      ui.Label('1) Filter by date', {fontWeight: 'bold'}),
+      ui.Label('1) Filter the collection', {fontWeight: 'bold'}),
       ui.Label('Start date', app.helpTextStyle), app.filters.startDate,
       ui.Label('End date', app.helpTextStyle), app.filters.endDate,
       ui.Label('Max cloud cover (%)', app.helpTextStyle), app.filters.maxCloudCover,
-      app.filters.mapCenter,
-      ui.Panel(
-        [app.filters.applyButton, app.filters.loadingLabel],
-        ui.Panel.Layout.flow('horizontal')
-      ),
+      app.filters.mapView,
+      ui.Panel([app.filters.applyButton, app.filters.loadingLabel], ui.Panel.Layout.flow('horizontal')),
       app.filters.statusLabel
     ],
     style: app.sectionStyle
@@ -183,7 +200,8 @@ app.createPanels = function() {
   app.picker.panel = ui.Panel({
     widgets: [
       ui.Label('2) Select an image', {fontWeight: 'bold'}),
-      ui.Panel([app.picker.select, app.picker.centerButton], ui.Panel.Layout.flow('horizontal')),
+      app.picker.select,
+      app.picker.centerButton,
       app.picker.infoLabel
     ],
     style: app.sectionStyle
@@ -195,17 +213,31 @@ app.createPanels = function() {
       items: [],
       onChange: function() {
         var option = app.visOptions[app.vis.select.getValue()];
-        app.vis.label.setValue(option.description);
-        app.refreshMapLayer();
+        if (option) {
+          app.vis.label.setValue(option.description);
+          app.refreshMapLayer();
+        }
+      }
+    }),
+    stretchButton: ui.Button({
+      label: 'Stretch 98%',
+      onClick: function() {
+        app.applyAutoStretch();
       }
     }),
     minSlider: ui.Slider({
-      min: 0, max: 1, value: 0, step: 0.01,
+      min: 0,
+      max: 1,
+      value: app.defaultMinStretch,
+      step: 0.01,
       onChange: app.refreshMapLayer,
       style: {width: '200px'}
     }),
     maxSlider: ui.Slider({
-      min: 0, max: 1, value: 0.98, step: 0.01,
+      min: 0,
+      max: 1,
+      value: app.defaultMaxStretch,
+      step: 0.01,
       onChange: app.refreshMapLayer,
       style: {width: '200px'}
     })
@@ -213,8 +245,8 @@ app.createPanels = function() {
 
   app.vis.panel = ui.Panel({
     widgets: [
-      ui.Label('3) Select a visualization', {fontWeight: 'bold'}),
-      app.vis.select,
+      ui.Label('3) Visualization', {fontWeight: 'bold'}),
+      ui.Panel([app.vis.select, app.vis.stretchButton], ui.Panel.Layout.flow('horizontal')),
       app.vis.label,
       ui.Label('Min stretch'), app.vis.minSlider,
       ui.Label('Max stretch'), app.vis.maxSlider
@@ -225,11 +257,11 @@ app.createPanels = function() {
   app.optionalLayersPanel = ui.Panel({
     widgets: [
       ui.Label('4) Optional layers', {fontWeight: 'bold'})
-    ]
+    ],
+    style: app.sectionStyle
   });
 
   Object.keys(app.assets).forEach(function(layerName) {
-    // Optional contextual layers can be toggled on demand during inspection.
     var checkbox = ui.Checkbox({
       label: layerName,
       onChange: function(checked) {
@@ -242,29 +274,8 @@ app.createPanels = function() {
 
   app.export = {
     button: ui.Button({
-      label: 'Export current image to Drive',
-      onClick: function() {
-        var selected = app.picker.select.getValue();
-        if (!selected) {
-          ui.alert('Select an image before exporting.');
-          return;
-        }
-
-        var imageIdSuffix = selected.split(' ')[0];
-        var imageId = app.collectionId + '/' + imageIdSuffix;
-        var visOption = app.visOptions[app.vis.select.getValue()];
-        var image = app.applyScaleAndOffset(ee.Image(imageId));
-
-        if (app.vis.select.getValue() === 'NDVI') {
-          image = app.addNdviBand(image);
-        }
-
-        Export.image.toDrive({
-          image: image.select(visOption.visParams.bands),
-          description: 'landsat_export_' + imageIdSuffix.replace('/', '_'),
-          maxPixels: 1e9
-        });
-      }
+      label: 'Export current scene to Drive',
+      onClick: app.exportCurrentScene
     })
   };
 
@@ -277,19 +288,24 @@ app.createPanels = function() {
   });
 };
 
-  app.createHelpers = function() {
+// Helper functions for validation, filtering, scene metadata, and exports.
+app.createHelpers = function() {
   app.setStatus = function(message, color) {
     app.filters.statusLabel.setValue(message || '');
     app.filters.statusLabel.style().set('color', color || 'gray');
     app.filters.statusLabel.style().set('shown', !!message);
   };
 
+  app.clearSceneInfo = function() {
+    app.picker.infoLabel.setValue('');
+    app.picker.infoLabel.style().set('shown', false);
+  };
+
   app.clearImageSelection = function() {
     app.sceneMetadataById = {};
     app.picker.select.items().reset([]);
     app.picker.select.setPlaceholder('No image available');
-    app.picker.infoLabel.setValue('');
-    app.picker.infoLabel.style().set('shown', false);
+    app.clearSceneInfo();
 
     if (app.imageLayer) {
       Map.layers().remove(app.imageLayer);
@@ -301,12 +317,10 @@ app.createPanels = function() {
     if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
       throw new Error(label + ' must use the YYYY-MM-DD format.');
     }
-
     var parsed = new Date(value + 'T00:00:00');
     if (isNaN(parsed.getTime())) {
       throw new Error(label + ' is not a valid date.');
     }
-
     return parsed;
   };
 
@@ -314,52 +328,84 @@ app.createPanels = function() {
     if (!value || !/^\d+(\.\d+)?$/.test(value)) {
       throw new Error(label + ' must be a number between 0 and 100.');
     }
-
     var parsed = Number(value);
     if (parsed < 0 || parsed > 100) {
       throw new Error(label + ' must be between 0 and 100.');
     }
-
     return parsed;
   };
 
   app.formatDate = function(value) {
-    var date = new Date(value);
-    return date.toISOString().slice(0, 10);
+    return new Date(value).toISOString().slice(0, 10);
   };
 
-  app.updateSceneInfo = function(imageIdSuffix) {
-    var metadata = app.sceneMetadataById[imageIdSuffix];
-    if (!metadata) {
-      app.picker.infoLabel.setValue('');
-      app.picker.infoLabel.style().set('shown', false);
-      return;
-    }
-
-    app.picker.infoLabel.setValue(
-      metadata.sensor + ' | ' + metadata.date + ' | ' + metadata.cloudiness.toFixed(2) + '% clouds'
-    );
-    app.picker.infoLabel.style().set('shown', true);
+  // Convert the current map canvas into an Earth Engine geometry.
+  app.getCurrentMapGeometry = function() {
+    var bounds = Map.getBounds();
+    return ee.Geometry.BBox(bounds[0], bounds[1], bounds[2], bounds[3]);
   };
 
   app.setLoadingMode = function(enabled) {
     app.filters.loadingLabel.style().set('shown', enabled);
-
     [
-      app.vis.select,
       app.filters.startDate,
       app.filters.endDate,
       app.filters.maxCloudCover,
+      app.filters.mapView,
       app.filters.applyButton,
-      app.filters.mapCenter,
       app.picker.select,
       app.picker.centerButton,
+      app.vis.select,
+      app.vis.stretchButton,
+      app.vis.minSlider,
+      app.vis.maxSlider,
       app.export.button
     ].forEach(function(widget) {
       widget.setDisabled(enabled);
     });
   };
 
+  app.updateSceneInfo = function(imageId) {
+    var metadata = app.sceneMetadataById[imageId];
+    if (!metadata) {
+      app.clearSceneInfo();
+      return;
+    }
+    app.picker.infoLabel.setValue(
+      metadata.sensor + ' | ' + metadata.date + ' | ' + metadata.cloudiness.toFixed(2) + '% clouds'
+    );
+    app.picker.infoLabel.style().set('shown', true);
+  };
+
+  // Merge the valid Landsat collections and sort the candidate scenes by cloud cover.
+  app.buildCollection = function(configs, startDate, endDate, maxCloudCover, useMapView) {
+    var geometry = useMapView ? app.getCurrentMapGeometry() : null;
+    var merged = null;
+
+    configs.forEach(function(config) {
+      var collection = ee.ImageCollection(config.id)
+        .filterDate(startDate, endDate)
+        .filter(ee.Filter.lte('CLOUD_COVER', maxCloudCover))
+        .map(function(image) {
+          return image.set('collection_label', config.sensor);
+        });
+
+      if (geometry) {
+        collection = collection.filterBounds(geometry);
+      }
+
+      merged = merged ? merged.merge(collection) : collection;
+    });
+
+    return merged
+      .map(function(image) {
+        return image.set('cloudiness', ee.Number(image.get('CLOUD_COVER')));
+      })
+      .sort('cloudiness')
+      .limit(app.imageCountLimit);
+  };
+
+  // Validate the form, filter the collection, and populate the scene picker.
   app.applyFilters = function() {
     var startValue = app.filters.startDate.getValue();
     var endValue = app.filters.endDate.getValue();
@@ -384,121 +430,250 @@ app.createPanels = function() {
       return;
     }
 
-    app.setStatus('');
-    app.setLoadingMode(true);
-
-    var startDate = ee.Date(startValue);
-    var endDate = ee.Date(endValue);
-    var config = app.getCollectionConfig(startDate);
-
-    if (!config) {
-      app.setLoadingMode(false);
+    var configs = app.getCollectionConfigs(startDateJs, endDateJs);
+    if (!configs) {
       app.clearImageSelection();
       app.setStatus(
-        'Dates between December 2011 and March 2013 are not supported here because of Landsat 7 sensor issues.',
+        'The selected period falls inside the Landsat 5 to Landsat 8 gap (December 2011 to March 2013).',
         'red'
       );
-      ui.alert(
-        'Dates between December 2011 and March 2013 are not supported here because of Landsat 7 sensor issues.'
-      );
+      ui.alert('No supported Landsat 5, 8, or 9 scenes are available for that date range.');
       return;
     }
 
-    app.collectionId = config.id;
-    app.bandConfig = config.bands;
-    app.visOptions = app.getVisualizationOptions();
-
+    app.activeConfigs = configs;
+    app.bandConfig = configs[0].bands;
+    app.visOptions = app.getVisualizationOptions(app.bandConfig);
     app.vis.select.items().reset(Object.keys(app.visOptions));
-    app.vis.select.setValue(Object.keys(app.visOptions)[0]);
-    app.vis.label.setValue(app.visOptions[app.vis.select.getValue()].description);
+    app.vis.select.setValue('Natural color');
+    app.vis.label.setValue(app.visOptions['Natural color'].description);
+    app.vis.minSlider.setValue(app.defaultMinStretch, false);
+    app.vis.maxSlider.setValue(app.defaultMaxStretch, false);
 
-    var filtered = ee.ImageCollection(app.collectionId)
-      .filterDate(startDate, endDate)
-      .filter(ee.Filter.lte('CLOUD_COVER', maxCloudCover));
+    app.setStatus('');
+    app.setLoadingMode(true);
 
-    if (app.filters.mapCenter.getValue()) {
-      filtered = filtered.filterBounds(Map.getCenter());
-    }
+    var filtered = app.buildCollection(
+      configs,
+      ee.Date(startValue),
+      ee.Date(endValue),
+      maxCloudCover,
+      app.filters.mapView.getValue()
+    );
 
-    filtered = filtered
-      // Cloud cover is used only as a ranking criterion for scene selection.
-      .map(function(image) {
-        return image.set('cloudiness', ee.Number(image.get('CLOUD_COVER')));
-      })
-      .sort('cloudiness')
-      .limit(app.imageCountLimit);
+    ee.Dictionary({
+      ids: filtered.aggregate_array('system:index'),
+      clouds: filtered.aggregate_array('cloudiness'),
+      times: filtered.aggregate_array('system:time_start'),
+      sensors: filtered.aggregate_array('collection_label')
+    }).evaluate(function(data, error) {
+      app.setLoadingMode(false);
 
-    filtered
-      .aggregate_array('system:index')
-      .zip(filtered.aggregate_array('cloudiness'))
-      .zip(filtered.aggregate_array('system:time_start'))
-      .evaluate(function(items) {
-        if (!items || items.length === 0) {
-          app.setLoadingMode(false);
-          app.clearImageSelection();
-          app.setStatus('No Landsat images were found for the selected filters.', 'red');
-          return;
-        }
+      if (error) {
+        app.clearImageSelection();
+        app.setStatus('Earth Engine error while loading Landsat scenes.', 'red');
+        print('Landsat scene loading error:', error);
+        return;
+      }
 
-        app.sceneMetadataById = {};
+      if (!data || !data.ids || data.ids.length === 0) {
+        app.clearImageSelection();
+        app.setStatus('No Landsat scenes were found for the selected filters.', 'red');
+        return;
+      }
 
-        var ids = items.map(function(item) {
-          var imageId = item[0][0];
-          var cloudiness = item[0][1];
-          var timeStart = item[1];
-
-          app.sceneMetadataById[imageId] = {
-            sensor: config.label,
-            cloudiness: cloudiness,
-            date: app.formatDate(timeStart)
-          };
-
-          return imageId + ' (' + cloudiness.toFixed(2) + '% clouds)';
-        });
-
-        app.setLoadingMode(false);
-        app.setStatus('Loaded ' + ids.length + ' candidate Landsat scenes.', 'gray');
-        app.picker.select.items().reset(ids);
-        app.picker.select.setPlaceholder('Select an image ID');
-
-        if (ids.length > 0) {
-          app.picker.select.setValue(ids[0]);
-        }
+      app.sceneMetadataById = {};
+      var ids = data.ids.map(function(id, index) {
+        app.sceneMetadataById[id] = {
+          sensor: data.sensors[index],
+          cloudiness: data.clouds[index],
+          date: app.formatDate(data.times[index])
+        };
+        return id + ' (' + data.clouds[index].toFixed(2) + '% clouds)';
       });
+
+      app.picker.select.items().reset(ids);
+      app.picker.select.setPlaceholder('Select an image ID');
+      app.setStatus('Loaded ' + ids.length + ' candidate Landsat scenes.', 'gray');
+      app.picker.select.setValue(ids[0]);
+    });
   };
 
-  app.refreshMapLayer = function() {
-    var selected = app.picker.select.getValue();
-    if (!selected || !app.collectionId || !app.bandConfig) return;
+  // Rebuild the selected image using the correct collection and band mapping.
+  app.buildCurrentImage = function(imageId) {
+    var matchingSensor = app.sceneMetadataById[imageId] && app.sceneMetadataById[imageId].sensor;
+    var bandConfig = app.bandConfig;
+    var collectionPath = null;
 
-    // Rebuild the displayed image every time the selected scene, visualization,
-    // or stretch values change.
-    var imageIdSuffix = selected.split(' ')[0];
-    app.updateSceneInfo(imageIdSuffix);
-    var image = app.applyScaleAndOffset(ee.Image(app.collectionId + '/' + imageIdSuffix));
+    app.activeConfigs.forEach(function(config) {
+      if (config.sensor === matchingSensor) {
+        collectionPath = config.id;
+        bandConfig = config.bands;
+      }
+    });
+
+    if (!collectionPath) {
+      return null;
+    }
+
+    var image = app.applyScaleAndOffset(ee.Image(collectionPath + '/' + imageId));
+    if (app.vis.select.getValue() === 'NDVI') {
+      image = app.addNdviBand(image, bandConfig);
+    }
+
+    return {
+      image: image,
+      bandConfig: bandConfig
+    };
+  };
+
+  // Compute a 2-98% stretch for the current scene within the current map view.
+  // This avoids slowing down image loading while still giving a quick one-click enhancement.
+  app.applyAutoStretch = function() {
+    var selected = app.picker.select.getValue();
+    if (!selected) {
+      ui.alert('Select an image before applying the stretch.');
+      return;
+    }
+
+    var imageId = selected.split(' ')[0];
+    var built = app.buildCurrentImage(imageId);
     var visOption = app.visOptions[app.vis.select.getValue()];
 
-    if (app.vis.select.getValue() === 'NDVI') {
-      image = app.addNdviBand(image);
+    if (!built || !visOption) {
+      ui.alert('Could not rebuild the selected Landsat scene.');
+      return;
     }
+
+    var selectedBands = visOption.visParams.bands || [];
+    var geometry = app.getCurrentMapGeometry();
+
+    app.setStatus('Computing 2-98% stretch for the current view...', 'gray');
+    app.setLoadingMode(true);
+
+    built.image.select(selectedBands).reduceRegion({
+      reducer: ee.Reducer.percentile([2, 98]),
+      geometry: geometry,
+      scale: 30,
+      bestEffort: true,
+      maxPixels: 1e7
+    }).evaluate(function(stats, error) {
+      app.setLoadingMode(false);
+
+      if (error) {
+        app.setStatus('Stretch failed because Earth Engine returned an error.', 'red');
+        print('Landsat stretch error:', error);
+        return;
+      }
+
+      if (!stats) {
+        app.setStatus('Stretch failed: no statistics were returned for the current view.', 'red');
+        return;
+      }
+
+      var mins = [];
+      var maxs = [];
+
+      selectedBands.forEach(function(bandName) {
+        var p2 = stats[bandName + '_p2'];
+        var p98 = stats[bandName + '_p98'];
+
+        if (typeof p2 === 'number' && typeof p98 === 'number' && isFinite(p2) && isFinite(p98)) {
+          mins.push(p2);
+          maxs.push(p98);
+        }
+      });
+
+      if (mins.length === 0 || maxs.length === 0) {
+        app.setStatus('Stretch failed: no valid percentile values were found.', 'red');
+        return;
+      }
+
+      var minValue = Math.max(0, Math.min.apply(null, mins));
+      var maxValue = Math.max.apply(null, maxs);
+
+      if (!(maxValue > minValue)) {
+        app.setStatus('Stretch failed: computed range is invalid.', 'red');
+        return;
+      }
+
+      app.vis.minSlider.setValue(minValue);
+      app.vis.maxSlider.setValue(maxValue);
+      app.setStatus('Stretch updated from the current map extent.', 'green');
+      app.refreshMapLayer();
+    });
+  };
+
+  // Refresh the displayed map layer after a scene or visualization change.
+  app.refreshMapLayer = function() {
+    var selected = app.picker.select.getValue();
+    if (!selected) {
+      return;
+    }
+
+    var imageId = selected.split(' ')[0];
+    var built = app.buildCurrentImage(imageId);
+
+    if (!built) {
+      app.setStatus('Could not rebuild the selected Landsat scene.', 'red');
+      return;
+    }
+
+    app.updateSceneInfo(imageId);
 
     if (app.imageLayer) {
       Map.layers().remove(app.imageLayer);
     }
 
-    app.imageLayer = ui.Map.Layer(image, {
+    var visOption = app.visOptions[app.vis.select.getValue()];
+    app.imageLayer = ui.Map.Layer(built.image, {
       bands: visOption.visParams.bands,
       palette: visOption.visParams.palette,
       gamma: visOption.visParams.gamma,
-      opacity: visOption.visParams.opacity,
       min: app.vis.minSlider.getValue(),
       max: app.vis.maxSlider.getValue()
     }, 'Image layer');
 
     Map.layers().insert(0, app.imageLayer);
   };
+
+  // Export the current scene with the same extent and displayed band configuration.
+  app.exportCurrentScene = function() {
+    var selected = app.picker.select.getValue();
+    if (!selected) {
+      ui.alert('Select an image before exporting.');
+      return;
+    }
+
+    var imageId = selected.split(' ')[0];
+    var built = app.buildCurrentImage(imageId);
+
+    if (!built) {
+      ui.alert('Could not rebuild the selected Landsat scene for export.');
+      return;
+    }
+
+    var visOption = app.visOptions[app.vis.select.getValue()];
+    var exportRegion = app.getCurrentMapGeometry();
+    var metadata = app.sceneMetadataById[imageId];
+    var exportName = 'landsat_' + imageId.replace(/\//g, '_');
+
+    Export.image.toDrive({
+      image: built.image.select(visOption.visParams.bands).clip(exportRegion),
+      description: exportName,
+      region: exportRegion,
+      scale: 30,
+      maxPixels: 1e9
+    });
+
+    app.setStatus(
+      'Export started for ' + metadata.sensor + ' (' + metadata.date + ') using the current map extent.',
+      'green'
+    );
+  };
 };
 
+// Toggle optional layers on the map.
 app.updateOptionalLayer = function(layerName, visible) {
   if (app.optionalLayerRefs[layerName]) {
     Map.layers().remove(app.optionalLayerRefs[layerName]);
@@ -512,6 +687,7 @@ app.updateOptionalLayer = function(layerName, visible) {
   }
 };
 
+// Boot sequence.
 app.boot = function() {
   app.createConstants();
   app.createHelpers();
@@ -531,7 +707,6 @@ app.boot = function() {
 
   Map.setCenter(-55.5, 0.1, 7);
   ui.root.insert(0, mainPanel);
-
   app.applyFilters();
 };
 

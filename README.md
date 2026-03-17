@@ -2,6 +2,8 @@
 
 Multitemporal geospatial analysis of illegal mining sites in the Calha Norte region of the Brazilian Amazon, based on satellite imagery interpretation, territorial mapping, and cross-referencing with public documentary sources.
 
+**Author:** Lucas Lima
+
 ---
 
 ## Overview
@@ -70,18 +72,27 @@ calha-norte-mining-analysis/
 
 The scripts in `scripts/gee_apps/` are interactive Earth Engine tools used to:
 
-- filter Landsat and Sentinel-2 imagery by date and map extent
+- filter Landsat and Sentinel-2 imagery by date, map extent, and cloud cover
 - switch between visualization modes
-- apply cloud-cover filtering and inspect scene metadata
-- overlay Calha Norte mining sites, mining zones, and hydrography
-- export selected scenes for cartographic interpretation
+- inspect scene metadata and image counts
+- overlay Calha Norte mining sites, mining zones, hydrography, and protected-area context
+- export selected scenes for cartographic interpretation using the current map extent and the band configuration currently displayed in the map canvas
+
+Workflow:
+
+1. Define the date range and optional cloud-cover threshold.
+2. Filter scenes either by the current map view or by the full scene footprint.
+3. Select a candidate image ranked by cloud cover.
+4. Switch visualization presets and optional context layers.
+5. If needed, run `Stretch 98%` to improve scene readability in the current view.
+6. Export the current scene using the same extent and displayed band configuration shown in the map canvas.
 
 Current public tools:
 
 - `01_landsat_explorer.js`
 - `02_sentinel2_explorer.js`
 
-These scripts should be read as working tools for image inspection and export, not as standalone analytical pipelines.
+These scripts should be read as working tools for image inspection and export, not as standalone analytical pipelines. They depend on private Earth Engine assets referenced inside the app code.
 
 ---
 
