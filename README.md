@@ -1,5 +1,9 @@
 # Calha Norte Mining Analysis
 
+[![JavaScript](https://img.shields.io/badge/JavaScript-20232A?style=flat&logo=javascript)](#)
+[![Google Earth Engine](https://img.shields.io/badge/Google%20Earth%20Engine-4285F4?style=flat&logo=googleearth)](#)
+[![QGIS](https://img.shields.io/badge/QGIS-589632?style=flat&logo=qgis)](#)
+
 Multitemporal geospatial analysis of illegal mining sites in the Calha Norte region of the Brazilian Amazon, based on satellite imagery interpretation, territorial mapping, and cross-referencing with public documentary sources.
 
 ## Overview
@@ -50,15 +54,6 @@ This repository contains:
 
 - selected Earth Engine apps used to inspect and export imagery
 - a curated set of final maps
-
-## Tech stack
-
-- Google Earth Engine
-- JavaScript
-- Landsat
-- Sentinel-2
-- GIS and cartographic interpretation
-- Territorial reference layers and documentary cross-checking
 
 Current structure:
 
