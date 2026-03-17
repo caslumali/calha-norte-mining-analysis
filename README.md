@@ -2,10 +2,6 @@
 
 Multitemporal geospatial analysis of illegal mining sites in the Calha Norte region of the Brazilian Amazon, based on satellite imagery interpretation, territorial mapping, and cross-referencing with public documentary sources.
 
-**Author:** Lucas Lima
-
----
-
 ## Overview
 
 This repository presents a curated public subset of a broader geospatial investigation of illegal mining sites across the Calha Norte region.
@@ -54,6 +50,15 @@ This repository contains:
 
 - selected Earth Engine apps used to inspect and export imagery
 - a curated set of final maps
+
+## Tech stack
+
+- Google Earth Engine
+- JavaScript
+- Landsat
+- Sentinel-2
+- GIS and cartographic interpretation
+- Territorial reference layers and documentary cross-checking
 
 Current structure:
 
